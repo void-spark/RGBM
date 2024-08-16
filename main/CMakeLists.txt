@@ -1,2 +1,2 @@
-idf_component_register(SRCS "shiny_main.c"
+idf_component_register(SRCS "rgbm_main.cpp"
                        INCLUDE_DIRS ".")
