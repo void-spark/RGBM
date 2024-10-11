@@ -19,13 +19,6 @@
 #include "wifi_helper.h"
 #include "mqtt_helper.h"
 
-// WiFi credentials.
-#define WIFI_SSID "Milkrun"
-#define WIFI_PASS "55382636751623425906"
-
-// MQTT details
-static const char* mqtt_server = "mqtt://raspberrypi.fritz.box";
-
 static const char* ota_url = "http://debian.fritz.box:8032/esp32/RGBM.bin";
 
 static const char *TAG = "RGBM";
@@ -39,7 +32,6 @@ static const char *TAG = "RGBM";
 #define R_CHANNEL LEDC_CHANNEL_1
 #define G_CHANNEL LEDC_CHANNEL_2
 #define M_CHANNEL LEDC_CHANNEL_3
-
 
 #define LEDC_DUTY_LOW     (0)
 #define LEDC_DUTY_HIGH    (2047) // Max for 11 bits
@@ -68,8 +60,34 @@ static void ota_task(void * pvParameter) {
 }
 
 static void subscribeTopics() {
+    // TODO: Send node/properties details, rename to setup or so?
+    subscribeDevTopic("globe/rgbm/set");
+    subscribeDevTopic("globe/rgbm/fade");
     subscribeDevTopic("$update");
-    subscribeTopic("/ledstrip1/#");
+}
+
+static void parse_csv(const char *rgbm_csv, int *r, int *g, int *b, int *m) {
+    char temp[256];
+    strncpy(temp, rgbm_csv, sizeof(temp) - 1);
+    temp[sizeof(temp) - 1] = '\0';
+
+    char *token;
+    int values[4] = {0, 0, 0, 0};
+    int index = 0;
+
+    token = strtok(temp, ",");
+    while (token != NULL && index < 4) {
+        int num = atoi(token);
+        if (num >= LEDC_DUTY_LOW && num <= LEDC_DUTY_HIGH) {
+            values[index++] = num;
+        }
+        token = strtok(NULL, ",");
+    }
+
+    *r = values[0];
+    *g = values[1];
+    *b = values[2];
+    *m = values[3];
 }
 
 static void handleMessage(const char* topic1, const char* topic2, const char* topic3, const char* data) {
@@ -80,65 +98,43 @@ static void handleMessage(const char* topic1, const char* topic2, const char* to
     ) {
         xTaskCreate(&ota_task, "ota_task", 8192, NULL, 5, NULL);
     }
-}
 
-static bool handleAnyMessage(const char* topic, const char* data) {
+    if(strcmp(topic1, "globe") == 0 && strcmp(topic2, "rgbm") == 0 && strcmp(topic3, "set") == 0) {
+        int r,g,b,m;
+        parse_csv(data, &r, &g, &b, &m);
 
-    if (strcmp(topic,"/ledstrip1/value/fade") == 0) {
-        const char color = data[0];
-        ledc_channel_t channel = R_CHANNEL;
-        if(color == 'g') {
-            channel = G_CHANNEL;
-        }
-        if(color == 'b') {
-            channel = B_CHANNEL;
-        }
-        if(color == 'm') {
-            channel = M_CHANNEL;
-        }
+        ESP_LOGI(TAG, "LEDC set duty = %d,%d,%d,%d", r, g, b, m);
+        ESP_ERROR_CHECK(ledc_set_duty(LEDC_LOW_SPEED_MODE, R_CHANNEL, r));
+        ESP_ERROR_CHECK(ledc_set_duty(LEDC_LOW_SPEED_MODE, G_CHANNEL, g));
+        ESP_ERROR_CHECK(ledc_set_duty(LEDC_LOW_SPEED_MODE, B_CHANNEL, b));
+        ESP_ERROR_CHECK(ledc_set_duty(LEDC_LOW_SPEED_MODE, M_CHANNEL, m));
+        ESP_ERROR_CHECK(ledc_update_duty(LEDC_LOW_SPEED_MODE, R_CHANNEL));
+        ESP_ERROR_CHECK(ledc_update_duty(LEDC_LOW_SPEED_MODE, G_CHANNEL));
+        ESP_ERROR_CHECK(ledc_update_duty(LEDC_LOW_SPEED_MODE, B_CHANNEL));
+        ESP_ERROR_CHECK(ledc_update_duty(LEDC_LOW_SPEED_MODE, M_CHANNEL));
 
-        int newvalue = atoi(data + 1);
-        if(newvalue < LEDC_DUTY_LOW || newvalue > LEDC_DUTY_HIGH ) {
-            return true;
-        }
-        printf("LEDC fade to duty = %d\n", newvalue);
-        ESP_ERROR_CHECK(ledc_set_fade_with_time(LEDC_LOW_SPEED_MODE, channel, newvalue, LEDC_FADE_TIME));
-        ESP_ERROR_CHECK(ledc_fade_start(LEDC_LOW_SPEED_MODE, channel, LEDC_FADE_NO_WAIT));
-        return true;
+        publishNodeProp("globe", "rgbm", data);
     }
 
-    if (strcmp(topic,"/ledstrip1/value/set") == 0) {
-        const char color = data[0];
-        ledc_channel_t channel = R_CHANNEL;
-        if(color == 'g') {
-            channel = G_CHANNEL;
-        }
-        if(color == 'b') {
-            channel = B_CHANNEL;
-        }
-        if(color == 'm') {
-            channel = M_CHANNEL;
-        }
+    if(strcmp(topic1, "globe") == 0 && strcmp(topic2, "rgbm") == 0 && strcmp(topic3, "fade") == 0) {
+        int r,g,b,m;
+        parse_csv(data, &r, &g, &b, &m);
 
-        int newvalue = atoi(data + 1);
-        if(newvalue < LEDC_DUTY_LOW || newvalue > LEDC_DUTY_HIGH ) {
-            return true;
-        }
-        printf("LEDC set duty = %d\n", newvalue);
-        ESP_ERROR_CHECK(ledc_set_duty(LEDC_LOW_SPEED_MODE, channel, newvalue));
-        ESP_ERROR_CHECK(ledc_update_duty(LEDC_LOW_SPEED_MODE, channel));
-        return true;
-    }
+        ESP_LOGI(TAG, "LEDC fade to duty = %d,%d,%d,%d", r, g, b, m);
+        ESP_ERROR_CHECK(ledc_set_fade_with_time(LEDC_LOW_SPEED_MODE, R_CHANNEL, r, LEDC_FADE_TIME));
+        ESP_ERROR_CHECK(ledc_set_fade_with_time(LEDC_LOW_SPEED_MODE, G_CHANNEL, g, LEDC_FADE_TIME));
+        ESP_ERROR_CHECK(ledc_set_fade_with_time(LEDC_LOW_SPEED_MODE, B_CHANNEL, b, LEDC_FADE_TIME));
+        ESP_ERROR_CHECK(ledc_set_fade_with_time(LEDC_LOW_SPEED_MODE, M_CHANNEL, m, LEDC_FADE_TIME));
+        ESP_ERROR_CHECK(ledc_fade_start(LEDC_LOW_SPEED_MODE, R_CHANNEL, LEDC_FADE_NO_WAIT));
+        ESP_ERROR_CHECK(ledc_fade_start(LEDC_LOW_SPEED_MODE, G_CHANNEL, LEDC_FADE_NO_WAIT));
+        ESP_ERROR_CHECK(ledc_fade_start(LEDC_LOW_SPEED_MODE, B_CHANNEL, LEDC_FADE_NO_WAIT));
+        ESP_ERROR_CHECK(ledc_fade_start(LEDC_LOW_SPEED_MODE, M_CHANNEL, LEDC_FADE_NO_WAIT));
 
-    if (strcmp(topic,"/ledstrip1/update") == 0) {
-        xTaskCreate(&ota_task, "ota_task", 8192, NULL, 5, NULL);
-        return true;
-    }
-    return false;
+        publishNodeProp("globe", "rgbm", data);
+    }       
 }
 
 extern "C" void app_main() {
-    // The LED pin should be on by default
     gpio_set_direction(R_GPIO, GPIO_MODE_OUTPUT);
     gpio_set_level(R_GPIO, 0);
     gpio_set_direction(G_GPIO, GPIO_MODE_OUTPUT);
@@ -148,7 +144,6 @@ extern "C" void app_main() {
     gpio_set_direction(M_GPIO, GPIO_MODE_OUTPUT);
     gpio_set_level(M_GPIO, 0);
     
-
     // Configure timer with 11 bits resolution, and 39khz (39062.5 is max for 11 bit)
     // We use high speed mode
     ledc_timer_config_t ledc_timer = {};
@@ -190,14 +185,13 @@ extern "C" void app_main() {
     }
     ESP_ERROR_CHECK(ret);
 
-
     // Initialize WiFi
     wifiStart();
 
     ESP_LOGI(TAG, "Waiting for wifi");
     wifiWait();
 
-    ESP_ERROR_CHECK(mqttStart("RGBM", subscribeTopics, handleMessage, handleAnyMessage));
+    ESP_ERROR_CHECK(mqttStart("RGBM", subscribeTopics, handleMessage, NULL));
 
     ESP_LOGI(TAG, "Waiting for MQTT");
 
